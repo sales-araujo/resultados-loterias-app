@@ -1,11 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import webpush from "web-push";
-
-// Allow self-signed/expired certs from Caixa
-if (typeof process !== "undefined") {
-  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
-}
+import { Agent, request as undiciRequest } from "undici";
 
 const supabaseUrl = process.env.SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -13,6 +9,10 @@ const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
 
 const CAIXA_API_BASE =
   "https://servicebus3.caixa.gov.br/portaldeloterias/api";
+
+const insecureAgent = new Agent({
+  connect: { rejectUnauthorized: false },
+});
 
 const LOTTERY_NAMES: Record<string, string> = {
   lotofacil: "Lotofácil",
@@ -33,27 +33,21 @@ webpush.setVapidDetails(
 );
 
 async function fetchCaixa(url: string): Promise<string> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 15000);
-  try {
-    const res = await fetch(url, {
-      headers: {
-        Accept: "application/json",
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        "Accept-Language": "pt-BR,pt;q=0.9",
-        Referer: "https://loterias.caixa.gov.br/",
-        Origin: "https://loterias.caixa.gov.br",
-      },
-      signal: controller.signal,
-      cache: "no-store",
-    });
-    clearTimeout(timeoutId);
-    return await res.text();
-  } catch (err) {
-    clearTimeout(timeoutId);
-    throw err;
-  }
+  const { body } = await undiciRequest(url, {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+      "Accept-Language": "pt-BR,pt;q=0.9",
+      Referer: "https://loterias.caixa.gov.br/",
+      Origin: "https://loterias.caixa.gov.br",
+    },
+    dispatcher: insecureAgent,
+    headersTimeout: 15000,
+    bodyTimeout: 15000,
+  });
+  return await body.text();
 }
 
 interface LotteryResult {

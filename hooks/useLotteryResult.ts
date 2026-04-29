@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { fetchLotteryResult, NotFoundError } from "@/lib/lottery-api";
+import { fetchLotteryResult } from "@/lib/lottery-api";
 import { LotteryResult } from "@/lib/types";
 
 export function useLotteryResult(game: string, contest: number | null) {
@@ -12,10 +12,8 @@ export function useLotteryResult(game: string, contest: number | null) {
       return fetchLotteryResult(game, contest);
     },
     enabled: !!game && !!contest,
-    retry: (failureCount, error) => {
-      if (error instanceof NotFoundError) return false;
-      return failureCount < 2;
-    },
+    retry: false,
+    refetchOnWindowFocus: false,
     staleTime: 1000 * 60 * 5,
     gcTime: 1000 * 60 * 30,
   });
