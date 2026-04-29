@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import webpush from "web-push";
-import https from "https";
+
+// Allow self-signed/expired certs from Caixa
+if (typeof process !== "undefined") {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+}
 
 const supabaseUrl = process.env.SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -28,31 +32,28 @@ webpush.setVapidDetails(
   process.env.VAPID_PRIVATE_KEY!
 );
 
-function fetchCaixa(url: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const req = https.get(
-      url,
-      {
-        headers: {
-          Accept: "application/json",
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        },
-        rejectUnauthorized: false,
-        timeout: 15000,
+async function fetchCaixa(url: string): Promise<string> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15000);
+  try {
+    const res = await fetch(url, {
+      headers: {
+        Accept: "application/json",
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Accept-Language": "pt-BR,pt;q=0.9",
+        Referer: "https://loterias.caixa.gov.br/",
+        Origin: "https://loterias.caixa.gov.br",
       },
-      (res) => {
-        let data = "";
-        res.on("data", (chunk: string) => (data += chunk));
-        res.on("end", () => resolve(data));
-      }
-    );
-    req.on("error", reject);
-    req.on("timeout", () => {
-      req.destroy();
-      reject(new Error("Timeout"));
+      signal: controller.signal,
+      cache: "no-store",
     });
-  });
+    clearTimeout(timeoutId);
+    return await res.text();
+  } catch (err) {
+    clearTimeout(timeoutId);
+    throw err;
+  }
 }
 
 interface LotteryResult {

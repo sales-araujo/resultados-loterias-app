@@ -1,96 +1,78 @@
 import { NextRequest, NextResponse } from "next/server";
-import https from "https";
 
 const CAIXA_API_BASE =
   "https://servicebus3.caixa.gov.br/portaldeloterias/api";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 30;
 
-const MAX_RETRIES = 3;
-const BASE_DELAY_MS = 1500;
+// Allow self-signed/expired certs from Caixa in Node.js runtime
+if (typeof process !== "undefined") {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+}
+
+const MAX_RETRIES = 2;
+const RETRY_DELAY_MS = 2000;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function fetchCaixa(url: string): Promise<{ statusCode: number; body: string }> {
-  return new Promise((resolve, reject) => {
-    const req = https.get(
-      url,
-      {
-        headers: {
-          Accept: "application/json",
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-          "Accept-Language": "pt-BR,pt;q=0.9",
-          "Accept-Encoding": "identity",
-          Connection: "keep-alive",
-          Referer: "https://loterias.caixa.gov.br/",
-          Origin: "https://loterias.caixa.gov.br",
-        },
-        rejectUnauthorized: false,
-        timeout: 15000,
-      },
-      (res) => {
-        let data = "";
-        res.on("data", (chunk) => (data += chunk));
-        res.on("end", () =>
-          resolve({ statusCode: res.statusCode || 0, body: data })
-        );
-      }
-    );
-    req.on("error", reject);
-    req.on("timeout", () => {
-      req.destroy();
-      reject(new Error("Timeout"));
-    });
-  });
-}
-
-async function fetchWithRetry(
+async function fetchCaixaWithRetry(
   url: string,
   game: string,
   contest: string
 ): Promise<{ data: Record<string, unknown> | null; notFound: boolean; error: string | null }> {
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     if (attempt > 0) {
-      const delay = BASE_DELAY_MS * Math.pow(2, attempt - 1);
-      console.log(`[Lottery API] Retry ${attempt}/${MAX_RETRIES} for ${game}/${contest} after ${delay}ms`);
-      await sleep(delay);
+      console.log(`[Lottery API] Retry ${attempt}/${MAX_RETRIES} for ${game}/${contest}`);
+      await sleep(RETRY_DELAY_MS);
     }
 
     try {
-      const { statusCode, body } = await fetchCaixa(url);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+      const res = await fetch(url, {
+        headers: {
+          Accept: "application/json",
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+          "Accept-Language": "pt-BR,pt;q=0.9",
+          Referer: "https://loterias.caixa.gov.br/",
+          Origin: "https://loterias.caixa.gov.br",
+        },
+        signal: controller.signal,
+        cache: "no-store",
+      });
+
+      clearTimeout(timeoutId);
+
+      // Caixa returns 500 when contest doesn't exist yet
+      if (res.status === 500 || res.status === 404) {
+        return { data: null, notFound: true, error: null };
+      }
+
+      // Transient blocking — retry
+      if (res.status === 403 || res.status === 503) {
+        console.warn(`[Lottery API] Status ${res.status} for ${game}/${contest}, attempt ${attempt + 1}`);
+        continue;
+      }
+
+      const body = await res.text();
 
       if (!body || body.trim() === "") {
         return { data: null, notFound: true, error: null };
       }
 
-      if (statusCode === 404) {
-        return { data: null, notFound: true, error: null };
-      }
-
-      // Caixa returns 500 when contest doesn't exist yet — treat as not found, no retry
-      if (statusCode === 500) {
-        return { data: null, notFound: true, error: null };
-      }
-
-      // HTML response = rate limiting / blocking — retry
+      // HTML response = rate limiting — retry
       if (body.trimStart().startsWith("<!") || body.trimStart().startsWith("<html")) {
-        console.warn(
-          `[Lottery API] HTML response (status ${statusCode}) for ${game}/${contest}, attempt ${attempt + 1}/${MAX_RETRIES}`
-        );
+        console.warn(`[Lottery API] HTML response for ${game}/${contest}, attempt ${attempt + 1}/${MAX_RETRIES}`);
         continue;
       }
 
-      // 403/503 = transient blocking — retry
-      if (statusCode === 403 || statusCode === 503) {
-        console.warn(`[Lottery API] Status ${statusCode} for ${game}/${contest}, attempt ${attempt + 1}`);
-        continue;
-      }
-
-      // Other 4xx = not found / client error — no retry
-      if (statusCode >= 400) {
+      // Other 4xx
+      if (res.status >= 400) {
         return { data: null, notFound: true, error: null };
       }
 
@@ -98,10 +80,7 @@ async function fetchWithRetry(
       try {
         parsed = JSON.parse(body);
       } catch {
-        console.warn(
-          `[Lottery API] Invalid JSON for ${game}/${contest}, attempt ${attempt + 1}:`,
-          body.substring(0, 100)
-        );
+        console.warn(`[Lottery API] Invalid JSON for ${game}/${contest}, attempt ${attempt + 1}`);
         continue;
       }
 
@@ -112,7 +91,7 @@ async function fetchWithRetry(
       return { data: parsed, notFound: false, error: null };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Unknown error";
-      if (msg.includes("Timeout") && attempt < MAX_RETRIES - 1) {
+      if ((msg.includes("abort") || msg.includes("Timeout")) && attempt < MAX_RETRIES - 1) {
         console.warn(`[Lottery API] Timeout for ${game}/${contest}, attempt ${attempt + 1}`);
         continue;
       }
@@ -134,7 +113,7 @@ export async function GET(
   const { game, contest } = await params;
   const url = `${CAIXA_API_BASE}/${game}/${contest}`;
 
-  const { data, notFound, error } = await fetchWithRetry(url, game, contest);
+  const { data, notFound, error } = await fetchCaixaWithRetry(url, game, contest);
 
   if (notFound) {
     return NextResponse.json(
@@ -149,11 +128,11 @@ export async function GET(
 
   if (error) {
     console.error(`[Lottery API] Failed ${game}/${contest}:`, error);
-    const status = error.includes("Timeout") ? 504 : 502;
+    const status = error.includes("Timeout") || error.includes("abort") ? 504 : 502;
     return NextResponse.json(
       {
         error: true,
-        message: error.includes("Timeout")
+        message: status === 504
           ? "Tempo limite excedido ao conectar com a API da Caixa."
           : `Erro ao conectar com a API da Caixa: ${error}`,
       },
