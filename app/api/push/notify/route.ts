@@ -1,18 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import webpush from "web-push";
-import { Agent, request as undiciRequest } from "undici";
 
 const supabaseUrl = process.env.SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
 
-const CAIXA_API_BASE =
-  "https://servicebus3.caixa.gov.br/portaldeloterias/api";
-
-const insecureAgent = new Agent({
-  connect: { rejectUnauthorized: false },
-});
+const CAIXA_API_BASES = [
+  "https://servicebus2.caixa.gov.br/portaldeloterias/api",
+  "https://servicebus3.caixa.gov.br/portaldeloterias/api",
+];
 
 const LOTTERY_NAMES: Record<string, string> = {
   lotofacil: "Lotofácil",
@@ -32,22 +29,35 @@ webpush.setVapidDetails(
   process.env.VAPID_PRIVATE_KEY!
 );
 
-async function fetchCaixa(url: string): Promise<string> {
-  const { body } = await undiciRequest(url, {
-    method: "GET",
-    headers: {
-      Accept: "application/json",
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-      "Accept-Language": "pt-BR,pt;q=0.9",
-      Referer: "https://loterias.caixa.gov.br/",
-      Origin: "https://loterias.caixa.gov.br",
-    },
-    dispatcher: insecureAgent,
-    headersTimeout: 15000,
-    bodyTimeout: 15000,
-  });
-  return await body.text();
+async function fetchCaixa(path: string): Promise<string> {
+  for (const base of CAIXA_API_BASES) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 12000);
+      const res = await fetch(`${base}/${path}`, {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+          "Accept-Language": "pt-BR,pt;q=0.9",
+          Referer: "https://loterias.caixa.gov.br/",
+          Origin: "https://loterias.caixa.gov.br",
+        },
+        signal: controller.signal,
+        cache: "no-store",
+      });
+      clearTimeout(timeoutId);
+      const text = await res.text();
+      if (text && text.trim() !== "" && !text.trimStart().startsWith("<!")) {
+        return text;
+      }
+    } catch (err) {
+      console.warn(`[Notify] ${base} failed:`, err instanceof Error ? err.message : err);
+      continue;
+    }
+  }
+  return "";
 }
 
 interface LotteryResult {
@@ -79,7 +89,7 @@ interface GameRow {
 
 async function getLatestResult(game: string): Promise<LotteryResult | null> {
   try {
-    const text = await fetchCaixa(`${CAIXA_API_BASE}/${game}/latest`);
+    const text = await fetchCaixa(`${game}/latest`);
     if (!text || text.trim() === "") return null;
     const data = JSON.parse(text);
     if (data?.exceptionMessage) return null;
