@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import webpush from "web-push";
-import https from "node:https";
 
 export const runtime = "nodejs";
 
@@ -9,9 +8,14 @@ const supabaseUrl = process.env.SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
 
-const CAIXA_HOSTS = [
-  { hostname: "servicebus2.caixa.gov.br", basePath: "/portaldeloterias/api" },
-  { hostname: "servicebus3.caixa.gov.br", basePath: "/portaldeloterias/api" },
+const CAIXA_API = "https://servicebus2.caixa.gov.br/portaldeloterias/api";
+
+const PROXY_BUILDERS = [
+  (url: string) =>
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  (url: string) =>
+    `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(url)}`,
+  (url: string) => url,
 ];
 
 const LOTTERY_NAMES: Record<string, string> = {
@@ -32,47 +36,25 @@ webpush.setVapidDetails(
   process.env.VAPID_PRIVATE_KEY!
 );
 
-function httpsGet(hostname: string, path: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const req = https.get(
-      {
-        hostname,
-        port: 443,
-        path,
-        headers: {
-          Accept: "application/json",
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-          "Accept-Language": "pt-BR,pt;q=0.9",
-          Referer: "https://loterias.caixa.gov.br/",
-          Origin: "https://loterias.caixa.gov.br",
-        },
-        rejectUnauthorized: false,
-        timeout: 15000,
-      },
-      (res) => {
-        let data = "";
-        res.on("data", (chunk: Buffer) => (data += chunk.toString()));
-        res.on("end", () => resolve(data));
-      }
-    );
-    req.on("error", (err) => reject(err));
-    req.on("timeout", () => {
-      req.destroy();
-      reject(new Error("Timeout"));
-    });
-  });
-}
-
 async function fetchCaixa(path: string): Promise<string> {
-  for (const host of CAIXA_HOSTS) {
+  const caixaUrl = `${CAIXA_API}/${path}`;
+  for (const buildUrl of PROXY_BUILDERS) {
     try {
-      const text = await httpsGet(host.hostname, `${host.basePath}/${path}`);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 12000);
+      const res = await fetch(buildUrl(caixaUrl), {
+        headers: { Accept: "application/json", "User-Agent": "Mozilla/5.0" },
+        signal: controller.signal,
+        cache: "no-store",
+      });
+      clearTimeout(timeoutId);
+      if (res.status === 403 || res.status === 503) continue;
+      const text = await res.text();
       if (text && text.trim() !== "" && !text.trimStart().startsWith("<!")) {
         return text;
       }
     } catch (err) {
-      console.warn(`[Notify] ${host.hostname} failed:`, err instanceof Error ? err.message : err);
+      console.warn(`[Notify] proxy failed:`, err instanceof Error ? err.message : err);
       continue;
     }
   }

@@ -1,14 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
-import https from "node:https";
 
-// Force Node.js runtime (NOT edge) — required for https module with rejectUnauthorized
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
-const CAIXA_HOSTS = [
-  { hostname: "servicebus2.caixa.gov.br", path: "/portaldeloterias/api" },
-  { hostname: "servicebus3.caixa.gov.br", path: "/portaldeloterias/api" },
+// Caixa blocks Vercel/AWS datacenter IPs (403).
+// We use proxy services to route requests through non-blocked IPs.
+const CAIXA_API = "https://servicebus2.caixa.gov.br/portaldeloterias/api";
+
+const PROXY_URLS = [
+  (url: string) =>
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  (url: string) =>
+    `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(url)}`,
+  // Direct fetch as last resort (works locally, blocked on Vercel)
+  (url: string) => url,
 ];
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -22,43 +28,6 @@ type CacheResult = {
 
 const cache = new Map<string, { result: CacheResult; timestamp: number }>();
 const inFlight = new Map<string, Promise<CacheResult>>();
-
-function httpsGet(
-  hostname: string,
-  path: string
-): Promise<{ statusCode: number; body: string }> {
-  return new Promise((resolve, reject) => {
-    const req = https.get(
-      {
-        hostname,
-        port: 443,
-        path,
-        headers: {
-          Accept: "application/json",
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-          "Accept-Language": "pt-BR,pt;q=0.9",
-          Referer: "https://loterias.caixa.gov.br/",
-          Origin: "https://loterias.caixa.gov.br",
-        },
-        rejectUnauthorized: false,
-        timeout: 15000,
-      },
-      (res) => {
-        let data = "";
-        res.on("data", (chunk: Buffer) => (data += chunk.toString()));
-        res.on("end", () =>
-          resolve({ statusCode: res.statusCode ?? 0, body: data })
-        );
-      }
-    );
-    req.on("error", (err) => reject(err));
-    req.on("timeout", () => {
-      req.destroy();
-      reject(new Error("Request timeout (15s)"));
-    });
-  });
-}
 
 async function fetchFromCaixa(
   game: string,
@@ -90,66 +59,87 @@ async function doFetch(
   contest: string,
   cacheKey: string
 ): Promise<CacheResult> {
+  const caixaUrl = `${CAIXA_API}/${game}/${contest}`;
   const errors: string[] = [];
 
-  for (const host of CAIXA_HOSTS) {
-    const fullPath = `${host.path}/${game}/${contest}`;
+  for (let i = 0; i < PROXY_URLS.length; i++) {
+    const proxyUrl = PROXY_URLS[i](caixaUrl);
+    const label = i < PROXY_URLS.length - 1 ? `proxy${i + 1}` : "direct";
 
     try {
-      console.log(
-        `[Lottery API] Trying ${host.hostname}${fullPath}`
-      );
-      const { statusCode, body } = await httpsGet(host.hostname, fullPath);
+      console.log(`[Lottery API] Trying ${label} for ${game}/${contest}`);
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 12000);
+
+      const res = await fetch(proxyUrl, {
+        headers: {
+          Accept: "application/json",
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        },
+        signal: controller.signal,
+        cache: "no-store",
+      });
+
+      clearTimeout(timeoutId);
 
       console.log(
-        `[Lottery API] ${host.hostname} responded ${statusCode}, body length=${body.length}`
+        `[Lottery API] ${label} responded ${res.status} for ${game}/${contest}`
       );
 
-      if (statusCode === 500 || statusCode === 404) {
-        const result: CacheResult = { data: null, notFound: true, error: null };
+      // Proxy returned an error for the upstream
+      if (res.status === 500 || res.status === 404) {
+        const result: CacheResult = {
+          data: null,
+          notFound: true,
+          error: null,
+        };
         cache.set(cacheKey, { result, timestamp: Date.now() });
         return result;
       }
 
-      if (statusCode === 403 || statusCode === 503) {
-        console.warn(
-          `[Lottery API] ${host.hostname} status ${statusCode} for ${game}/${contest}`
-        );
-        errors.push(`${host.hostname}: HTTP ${statusCode}`);
+      if (res.status === 403 || res.status === 503) {
+        errors.push(`${label}: HTTP ${res.status}`);
         continue;
       }
 
-      if (!body || body.trim() === "") {
-        const result: CacheResult = { data: null, notFound: true, error: null };
+      const text = await res.text();
+
+      if (!text || text.trim() === "") {
+        const result: CacheResult = {
+          data: null,
+          notFound: true,
+          error: null,
+        };
         cache.set(cacheKey, { result, timestamp: Date.now() });
         return result;
       }
 
+      // HTML = blocked/rate-limited
       if (
-        body.trimStart().startsWith("<!") ||
-        body.trimStart().startsWith("<html")
+        text.trimStart().startsWith("<!") ||
+        text.trimStart().startsWith("<html")
       ) {
-        console.warn(
-          `[Lottery API] HTML response from ${host.hostname} for ${game}/${contest}`
-        );
-        errors.push(`${host.hostname}: HTML response (rate limit)`);
+        errors.push(`${label}: HTML response`);
         continue;
       }
 
-      if (statusCode >= 400) {
-        const result: CacheResult = { data: null, notFound: true, error: null };
+      if (res.status >= 400) {
+        const result: CacheResult = {
+          data: null,
+          notFound: true,
+          error: null,
+        };
         cache.set(cacheKey, { result, timestamp: Date.now() });
         return result;
       }
 
       let parsed;
       try {
-        parsed = JSON.parse(body);
+        parsed = JSON.parse(text);
       } catch {
-        console.warn(
-          `[Lottery API] Invalid JSON from ${host.hostname} for ${game}/${contest}`
-        );
-        errors.push(`${host.hostname}: invalid JSON`);
+        errors.push(`${label}: invalid JSON`);
         continue;
       }
 
@@ -157,7 +147,11 @@ async function doFetch(
         parsed?.exceptionMessage ||
         parsed?.message === "Ocorreu um erro inesperado."
       ) {
-        const result: CacheResult = { data: null, notFound: true, error: null };
+        const result: CacheResult = {
+          data: null,
+          notFound: true,
+          error: null,
+        };
         cache.set(cacheKey, { result, timestamp: Date.now() });
         return result;
       }
@@ -171,10 +165,8 @@ async function doFetch(
       return result;
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error(
-        `[Lottery API] ${host.hostname} error for ${game}/${contest}: ${msg}`
-      );
-      errors.push(`${host.hostname}: ${msg}`);
+      console.warn(`[Lottery API] ${label} error: ${msg}`);
+      errors.push(`${label}: ${msg}`);
       continue;
     }
   }
@@ -182,7 +174,7 @@ async function doFetch(
   return {
     data: null,
     notFound: false,
-    error: `Todos os servidores da Caixa falharam: ${errors.join("; ")}`,
+    error: `Todos os proxies falharam: ${errors.join("; ")}`,
   };
 }
 

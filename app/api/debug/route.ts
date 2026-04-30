@@ -1,105 +1,74 @@
 import { NextResponse } from "next/server";
-import https from "node:https";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-function httpsGet(
-  hostname: string,
-  path: string
-): Promise<{ statusCode: number; body: string; error: string | null }> {
-  return new Promise((resolve) => {
-    try {
-      const req = https.get(
-        {
-          hostname,
-          port: 443,
-          path,
-          headers: {
-            Accept: "application/json",
-            "User-Agent": "Mozilla/5.0",
-          },
-          rejectUnauthorized: false,
-          timeout: 10000,
-        },
-        (res) => {
-          let data = "";
-          res.on("data", (chunk: Buffer) => (data += chunk.toString()));
-          res.on("end", () =>
-            resolve({ statusCode: res.statusCode ?? 0, body: data, error: null })
-          );
-        }
-      );
-      req.on("error", (err) =>
-        resolve({ statusCode: 0, body: "", error: `req error: ${err.message}` })
-      );
-      req.on("timeout", () => {
-        req.destroy();
-        resolve({ statusCode: 0, body: "", error: "timeout" });
-      });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      resolve({ statusCode: 0, body: "", error: `catch: ${msg}` });
-    }
-  });
-}
+const CAIXA_URL =
+  "https://servicebus2.caixa.gov.br/portaldeloterias/api/lotofacil/3665";
 
 export async function GET() {
   const results: Record<string, unknown> = {
     timestamp: new Date().toISOString(),
     nodeVersion: process.version,
-    platform: process.platform,
-    env_NODE_TLS: process.env.NODE_TLS_REJECT_UNAUTHORIZED ?? "not set",
   };
 
-  // Test 1: simple response (no external call)
-  results.test1_simple = "OK";
-
-  // Test 2: https to servicebus2
+  // Test 1: allorigins proxy
   try {
-    const r2 = await httpsGet(
-      "servicebus2.caixa.gov.br",
-      "/portaldeloterias/api/lotofacil/3665"
-    );
-    results.test2_servicebus2 = {
-      statusCode: r2.statusCode,
-      bodyLength: r2.body.length,
-      bodyPreview: r2.body.substring(0, 150),
-      error: r2.error,
+    const url1 = `https://api.allorigins.win/raw?url=${encodeURIComponent(CAIXA_URL)}`;
+    const r1 = await fetch(url1, {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(12000),
+      cache: "no-store",
+    });
+    const text1 = await r1.text();
+    results.test1_allorigins = {
+      status: r1.status,
+      bodyLength: text1.length,
+      bodyPreview: text1.substring(0, 200),
+      isJSON: text1.trimStart().startsWith("{"),
     };
   } catch (err: unknown) {
-    results.test2_servicebus2 = {
+    results.test1_allorigins = {
       error: err instanceof Error ? err.message : String(err),
     };
   }
 
-  // Test 3: https to servicebus3
+  // Test 2: codetabs proxy
   try {
-    const r3 = await httpsGet(
-      "servicebus3.caixa.gov.br",
-      "/portaldeloterias/api/lotofacil/3665"
-    );
-    results.test3_servicebus3 = {
-      statusCode: r3.statusCode,
-      bodyLength: r3.body.length,
-      bodyPreview: r3.body.substring(0, 150),
-      error: r3.error,
+    const url2 = `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(CAIXA_URL)}`;
+    const r2 = await fetch(url2, {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(12000),
+      cache: "no-store",
+    });
+    const text2 = await r2.text();
+    results.test2_codetabs = {
+      status: r2.status,
+      bodyLength: text2.length,
+      bodyPreview: text2.substring(0, 200),
+      isJSON: text2.trimStart().startsWith("{"),
     };
   } catch (err: unknown) {
-    results.test3_servicebus3 = {
+    results.test2_codetabs = {
       error: err instanceof Error ? err.message : String(err),
     };
   }
 
-  // Test 4: native fetch to a public API (to rule out general network issues)
+  // Test 3: direct fetch (expected to fail with 403 on Vercel)
   try {
-    const r4 = await fetch("https://httpbin.org/get", { signal: AbortSignal.timeout(5000) });
-    results.test4_httpbin = {
-      statusCode: r4.status,
-      ok: r4.ok,
+    const r3 = await fetch(CAIXA_URL, {
+      headers: { Accept: "application/json", "User-Agent": "Mozilla/5.0" },
+      signal: AbortSignal.timeout(12000),
+      cache: "no-store",
+    });
+    const text3 = await r3.text();
+    results.test3_direct = {
+      status: r3.status,
+      bodyLength: text3.length,
+      isJSON: text3.trimStart().startsWith("{"),
     };
   } catch (err: unknown) {
-    results.test4_httpbin = {
+    results.test3_direct = {
       error: err instanceof Error ? err.message : String(err),
     };
   }
