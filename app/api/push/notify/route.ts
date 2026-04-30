@@ -1,14 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import webpush from "web-push";
+import https from "node:https";
+
+export const runtime = "nodejs";
 
 const supabaseUrl = process.env.SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
 
-const CAIXA_API_BASES = [
-  "https://servicebus2.caixa.gov.br/portaldeloterias/api",
-  "https://servicebus3.caixa.gov.br/portaldeloterias/api",
+const CAIXA_HOSTS = [
+  { hostname: "servicebus2.caixa.gov.br", basePath: "/portaldeloterias/api" },
+  { hostname: "servicebus3.caixa.gov.br", basePath: "/portaldeloterias/api" },
 ];
 
 const LOTTERY_NAMES: Record<string, string> = {
@@ -29,13 +32,13 @@ webpush.setVapidDetails(
   process.env.VAPID_PRIVATE_KEY!
 );
 
-async function fetchCaixa(path: string): Promise<string> {
-  for (const base of CAIXA_API_BASES) {
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 12000);
-      const res = await fetch(`${base}/${path}`, {
-        method: "GET",
+function httpsGet(hostname: string, path: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const req = https.get(
+      {
+        hostname,
+        port: 443,
+        path,
         headers: {
           Accept: "application/json",
           "User-Agent":
@@ -44,16 +47,32 @@ async function fetchCaixa(path: string): Promise<string> {
           Referer: "https://loterias.caixa.gov.br/",
           Origin: "https://loterias.caixa.gov.br",
         },
-        signal: controller.signal,
-        cache: "no-store",
-      });
-      clearTimeout(timeoutId);
-      const text = await res.text();
+        rejectUnauthorized: false,
+        timeout: 15000,
+      },
+      (res) => {
+        let data = "";
+        res.on("data", (chunk: Buffer) => (data += chunk.toString()));
+        res.on("end", () => resolve(data));
+      }
+    );
+    req.on("error", (err) => reject(err));
+    req.on("timeout", () => {
+      req.destroy();
+      reject(new Error("Timeout"));
+    });
+  });
+}
+
+async function fetchCaixa(path: string): Promise<string> {
+  for (const host of CAIXA_HOSTS) {
+    try {
+      const text = await httpsGet(host.hostname, `${host.basePath}/${path}`);
       if (text && text.trim() !== "" && !text.trimStart().startsWith("<!")) {
         return text;
       }
     } catch (err) {
-      console.warn(`[Notify] ${base} failed:`, err instanceof Error ? err.message : err);
+      console.warn(`[Notify] ${host.hostname} failed:`, err instanceof Error ? err.message : err);
       continue;
     }
   }
