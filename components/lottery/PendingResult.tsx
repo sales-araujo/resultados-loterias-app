@@ -2,7 +2,8 @@
 
 import { motion } from "framer-motion";
 import { Card, CardContent } from "@/components/ui/card";
-import { Clock, AlertCircle } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Clock, AlertCircle, RefreshCw } from "lucide-react";
 import { LotteryConfig } from "@/lib/types";
 
 interface PendingResultProps {
@@ -10,6 +11,7 @@ interface PendingResultProps {
   config: LotteryConfig;
   isError?: boolean;
   errorMessage?: string;
+  onRetry?: () => void;
 }
 
 export function PendingResult({
@@ -17,6 +19,7 @@ export function PendingResult({
   config,
   isError,
   errorMessage,
+  onRetry,
 }: PendingResultProps) {
   return (
     <motion.div
@@ -56,8 +59,10 @@ export function PendingResult({
               </h3>
               <p className="text-sm text-muted-foreground max-w-md">
                 {isError
-                  ? errorMessage ||
-                    "Ocorreu um erro ao buscar o resultado. Verifique sua conexão e tente novamente."
+                  ? errorMessage?.includes("proxy") || errorMessage?.includes("conectar")
+                    ? "Problema temporário de conexão. Isso pode acontecer no modo offline ou com conexão instável. Tente novamente em alguns instantes."
+                    : errorMessage ||
+                      "Ocorreu um erro ao buscar o resultado. Verifique sua conexão e tente novamente."
                   : `O concurso ${contestNumber} da ${config.displayName} ainda não foi apurado. O resultado será disponibilizado após o sorteio.`}
               </p>
             </div>
@@ -71,6 +76,18 @@ export function PendingResult({
             >
               <span>Concurso {contestNumber}</span>
             </div>
+
+            {onRetry && (
+              <Button
+                onClick={onRetry}
+                variant="outline"
+                size="sm"
+                className="mt-2 cursor-pointer"
+              >
+                <RefreshCw className="h-4 w-4 mr-2" />
+                Tentar Novamente
+              </Button>
+            )}
           </div>
         </CardContent>
       </Card>

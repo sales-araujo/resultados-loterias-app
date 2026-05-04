@@ -27,6 +27,7 @@ interface GameCardProps {
   onSearch: (game: Game) => void;
   onUpdateContest?: (id: string, inicio: number, fim: number | null) => void;
   isDeleting?: boolean;
+  ended?: boolean;
 }
 
 export function GameCard({
@@ -36,6 +37,7 @@ export function GameCard({
   onSearch,
   onUpdateContest,
   isDeleting,
+  ended,
 }: GameCardProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [editInicio, setEditInicio] = useState(game.concurso_inicio.toString());
@@ -66,7 +68,7 @@ export function GameCard({
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -20 }}
       layout
-      className="w-full min-w-0 shrink-0"
+      className={`w-full min-w-0 shrink-0${ended ? " opacity-50 grayscale" : ""}`}
     >
       <Card className="overflow-hidden">
         <div

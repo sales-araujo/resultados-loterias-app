@@ -41,13 +41,13 @@ export function StatsPanel({ matchResults, config }: StatsPanelProps) {
     },
     {
       icon: Target,
-      label: "Maior nº acertos",
+      label: "Mais acertos",
       value: bestMatch.toString(),
       color: "#ef4444",
     },
     {
       icon: TrendingUp,
-      label: "Média acertos",
+      label: "Média",
       value: avgMatch.toFixed(1),
       color: "#3b82f6",
     },
@@ -59,7 +59,7 @@ export function StatsPanel({ matchResults, config }: StatsPanelProps) {
     },
     {
       icon: XCircle,
-      label: "Não premiado",
+      label: "Sem prêmio",
       value: (totalContests - totalWins).toString(),
       color: "#9ca3af",
     },
@@ -100,7 +100,7 @@ export function StatsPanel({ matchResults, config }: StatsPanelProps) {
                 />
               </div>
               <div className="min-w-0">
-                <p className="text-xs text-muted-foreground truncate">
+                <p className="text-xs text-muted-foreground leading-tight">
                   {stat.label}
                 </p>
                 <p className="text-sm font-bold truncate">{stat.value}</p>

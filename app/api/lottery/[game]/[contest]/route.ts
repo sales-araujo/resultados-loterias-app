@@ -9,21 +9,30 @@ export const maxDuration = 30;
 const CAIXA_API = "https://servicebus2.caixa.gov.br/portaldeloterias/api";
 
 const PROXY_URLS = [
+  // Proxy 1: AllOrigins (mais confiável)
   (url: string) =>
     `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  // Proxy 2: CORS Anywhere alternativo
+  (url: string) =>
+    `https://corsproxy.io/?${encodeURIComponent(url)}`,
+  // Proxy 3: CodeTabs
   (url: string) =>
     `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(url)}`,
+  // Proxy 4: ThingProxy
+  (url: string) =>
+    `https://thingproxy.freeboard.io/fetch/${url}`,
   // Direct fetch as last resort (works locally, blocked on Vercel)
   (url: string) => url,
 ];
 
-const CACHE_TTL_MS = 5 * 60 * 1000;
-const NOT_FOUND_CACHE_TTL_MS = 60 * 1000;
+const NOT_FOUND_CACHE_TTL_MS = 60 * 1000; // 60 segundos para não encontrados
+const ERROR_CACHE_TTL_MS = 30 * 1000; // 30 segundos para erros
 
 type CacheResult = {
   data: Record<string, unknown> | null;
   notFound: boolean;
   error: string | null;
+  timestamp?: number; // Adicionar timestamp para melhor controle
 };
 
 const cache = new Map<string, { result: CacheResult; timestamp: number }>();
@@ -37,13 +46,29 @@ async function fetchFromCaixa(
 
   const cached = cache.get(cacheKey);
   if (cached) {
-    const ttl = cached.result.notFound ? NOT_FOUND_CACHE_TTL_MS : CACHE_TTL_MS;
-    if (Date.now() - cached.timestamp < ttl) return cached.result;
+    // Valid results (data !== null) are cached permanently — lottery results are immutable
+    if (cached.result.data !== null) {
+      console.log(`[Lottery API] Cache hit (permanent) for ${cacheKey}`);
+      return cached.result;
+    }
+
+    // Not-found and error results use TTL-based expiration
+    const ttl = cached.result.notFound
+      ? NOT_FOUND_CACHE_TTL_MS
+      : ERROR_CACHE_TTL_MS;
+
+    if (Date.now() - cached.timestamp < ttl) {
+      console.log(`[Lottery API] Cache hit for ${cacheKey}`);
+      return cached.result;
+    }
     cache.delete(cacheKey);
   }
 
   const existing = inFlight.get(cacheKey);
-  if (existing) return existing;
+  if (existing) {
+    console.log(`[Lottery API] Request in-flight for ${cacheKey}`);
+    return existing;
+  }
 
   const promise = doFetch(game, contest, cacheKey);
   inFlight.set(cacheKey, promise);
@@ -70,7 +95,8 @@ async function doFetch(
       console.log(`[Lottery API] Trying ${label} for ${game}/${contest}`);
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 12000);
+      // Aumentar timeout para 20 segundos (melhor para PWA)
+      const timeoutId = setTimeout(() => controller.abort(), 20000);
 
       const res = await fetch(proxyUrl, {
         headers: {
@@ -89,17 +115,18 @@ async function doFetch(
       );
 
       // Proxy returned an error for the upstream
-      if (res.status === 500 || res.status === 404) {
+      if (res.status === 404) {
         const result: CacheResult = {
           data: null,
           notFound: true,
           error: null,
+          timestamp: Date.now(),
         };
         cache.set(cacheKey, { result, timestamp: Date.now() });
         return result;
       }
 
-      if (res.status === 403 || res.status === 503) {
+      if (res.status === 403 || res.status === 500 || res.status === 503 || res.status === 520 || res.status === 522) {
         errors.push(`${label}: HTTP ${res.status}`);
         continue;
       }
@@ -111,6 +138,7 @@ async function doFetch(
           data: null,
           notFound: true,
           error: null,
+          timestamp: Date.now(),
         };
         cache.set(cacheKey, { result, timestamp: Date.now() });
         return result;
@@ -130,6 +158,7 @@ async function doFetch(
           data: null,
           notFound: true,
           error: null,
+          timestamp: Date.now(),
         };
         cache.set(cacheKey, { result, timestamp: Date.now() });
         return result;
@@ -151,6 +180,7 @@ async function doFetch(
           data: null,
           notFound: true,
           error: null,
+          timestamp: Date.now(),
         };
         cache.set(cacheKey, { result, timestamp: Date.now() });
         return result;
@@ -160,8 +190,10 @@ async function doFetch(
         data: parsed,
         notFound: false,
         error: null,
+        timestamp: Date.now(),
       };
       cache.set(cacheKey, { result, timestamp: Date.now() });
+      console.log(`[Lottery API] Success with ${label} for ${game}/${contest}`);
       return result;
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -171,11 +203,15 @@ async function doFetch(
     }
   }
 
-  return {
+  // Todos os proxies falharam - cachear o erro por menos tempo
+  const errorResult: CacheResult = {
     data: null,
     notFound: false,
     error: `Todos os proxies falharam: ${errors.join("; ")}`,
+    timestamp: Date.now(),
   };
+  cache.set(cacheKey, { result: errorResult, timestamp: Date.now() });
+  return errorResult;
 }
 
 export async function GET(

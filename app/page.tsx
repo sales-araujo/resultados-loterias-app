@@ -1,11 +1,12 @@
 "use client";
 
-import { useState, useCallback, useMemo, useRef, useEffect, Suspense } from "react";
-import { useSearchParams } from "next/navigation";
+import { useState, useCallback, useMemo } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { LotterySelector } from "@/components/lottery/LotterySelector";
 import { GameForm } from "@/components/lottery/GameForm";
-import { GameCard } from "@/components/lottery/GameCard";
+import { GameSection } from "@/components/lottery/GameSection";
+import { GameCardSkeleton } from "@/components/lottery/GameCardSkeleton";
+import { ContestSearch } from "@/components/lottery/ContestSearch";
 import { ResultCard } from "@/components/lottery/ResultCard";
 import { PendingResult } from "@/components/lottery/PendingResult";
 import { StatsPanel } from "@/components/lottery/StatsPanel";
@@ -13,79 +14,71 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { useGames } from "@/hooks/useGames";
-import { usePushNotifications } from "@/hooks/usePushNotifications";
 import { useLotteryResult } from "@/hooks/useLotteryResult";
-import { getLotteryConfig, LOTTERY_CONFIGS } from "@/lib/lottery-config";
-import { crossCheckNumbers, formatCurrency } from "@/lib/lottery-utils";
-import { Game, GameInsert, MatchResult, LotteryResult } from "@/lib/types";
+import { getLotteryConfig } from "@/lib/lottery-config";
+import { crossCheckNumbers, classifyGame } from "@/lib/lottery-utils";
+import { Game, GameInsert, MatchResult } from "@/lib/types";
 import { NotFoundError } from "@/lib/lottery-api";
+import { getCachedResultsInRange } from "@/lib/persistent-cache";
 import {
   Ticket,
   Loader2,
   ChevronLeft,
   ChevronRight,
-  ListChecks,
   X,
-  Bell,
-  BellOff,
-  BellRing,
 } from "lucide-react";
-import { toast } from "sonner";
 
 function HomeContent() {
-  const searchParams = useSearchParams();
   const [selectedLottery, setSelectedLottery] = useState("lotofacil");
   const [searchingGame, setSearchingGame] = useState<Game | null>(null);
   const [currentContest, setCurrentContest] = useState<number | null>(null);
-  const [deepLinkHandled, setDeepLinkHandled] = useState(false);
+  const [latestContestMap, setLatestContestMap] = useState<Record<string, number>>({});
 
   const config = getLotteryConfig(selectedLottery)!;
   const { games, isLoading, createGame, deleteGame, updateGame } =
     useGames(selectedLottery);
-  const [carouselIndex, setCarouselIndex] = useState(0);
-  const carouselRef = useRef<HTMLDivElement>(null);
-  const { permission, isSubscribed, isLoading: isPushLoading, subscribe, unsubscribe } =
-    usePushNotifications();
-
-  // Deep link from push notification: ?game=lotofacil&contest=3669
-  useEffect(() => {
-    if (deepLinkHandled || isLoading) return;
-    const gameParam = searchParams.get("game");
-    const contestParam = searchParams.get("contest");
-    if (gameParam && contestParam) {
-      const contestNum = parseInt(contestParam, 10);
-      if (contestNum > 0) {
-        setSelectedLottery(gameParam);
-        setCurrentContest(contestNum);
-        // Find a matching game to show cross-check results
-        const matchingGame = games.find(
-          (g) =>
-            g.tipo_jogo === gameParam &&
-            g.concurso_inicio <= contestNum &&
-            (g.concurso_fim ? g.concurso_fim >= contestNum : g.concurso_inicio === contestNum)
-        );
-        if (matchingGame) {
-          setSearchingGame(matchingGame);
-        } else if (games.length > 0) {
-          // Use first game of this type as context
-          const firstGame = games.find((g) => g.tipo_jogo === gameParam);
-          if (firstGame) {
-            setSearchingGame(firstGame);
-          }
-        }
-        setDeepLinkHandled(true);
-      }
-    }
-  }, [searchParams, games, isLoading, deepLinkHandled]);
 
   const {
     data: resultData,
     isLoading: isLoadingResult,
     error: resultError,
+    refetch: refetchResult,
   } = useLotteryResult(
     searchingGame?.tipo_jogo || selectedLottery,
     currentContest
   );
+
+  // Update latestContestMap when a result is fetched successfully
+  const latestContest = latestContestMap[selectedLottery];
+
+  useMemo(() => {
+    if (resultData && resultData.numero) {
+      setLatestContestMap((prev) => {
+        const current = prev[selectedLottery];
+        if (!current || resultData.numero > current) {
+          return { ...prev, [selectedLottery]: resultData.numero };
+        }
+        return prev;
+      });
+    }
+  }, [resultData, selectedLottery]);
+
+  // Classify games into active and ended
+  const { activeGames, endedGames } = useMemo(() => {
+    if (!latestContest) {
+      return { activeGames: games, endedGames: [] as Game[] };
+    }
+    const active: Game[] = [];
+    const ended: Game[] = [];
+    for (const game of games) {
+      if (classifyGame(game, latestContest) === "active") {
+        active.push(game);
+      } else {
+        ended.push(game);
+      }
+    }
+    return { activeGames: active, endedGames: ended };
+  }, [games, latestContest]);
 
   const matchResult: MatchResult | null = useMemo(() => {
     if (!searchingGame || !resultData) return null;
@@ -106,14 +99,48 @@ function HomeContent() {
         setSearchingGame(null);
         setCurrentContest(null);
       }
-      setCarouselIndex((prev) => Math.max(0, Math.min(prev, games.length - 2)));
     },
-    [deleteGame, searchingGame, games.length]
+    [deleteGame, searchingGame]
   );
 
-  const handleSearchGame = useCallback((game: Game) => {
+  // Lupa: open at the most recent cached contest, or concurso_inicio if no cache
+  const handleGameSearch = useCallback(async (game: Game) => {
     setSearchingGame(game);
-    setCurrentContest(game.concurso_inicio);
+    setAllMatchResults([]);
+
+    const start = game.concurso_inicio;
+    const end = game.concurso_fim || game.concurso_inicio;
+
+    // Load all cached results from IndexedDB and build stats immediately
+    const cachedResults = await getCachedResultsInRange(game.tipo_jogo, start, end);
+
+    if (cachedResults.size > 0) {
+      // Build match results from cache for the stats panel
+      const cachedMatches: MatchResult[] = [];
+      let maxContest = 0;
+
+      for (const [contest, result] of cachedResults) {
+        cachedMatches.push(crossCheckNumbers(game, result));
+        if (contest > maxContest) maxContest = contest;
+      }
+
+      cachedMatches.sort((a, b) => a.result.numero - b.result.numero);
+      setAllMatchResults(cachedMatches);
+
+      // Go straight to the most recent cached contest (instant, no API call)
+      setCurrentContest(maxContest);
+
+      setLatestContestMap((prev) => {
+        const current = prev[game.tipo_jogo];
+        if (!current || maxContest > current) {
+          return { ...prev, [game.tipo_jogo]: maxContest };
+        }
+        return prev;
+      });
+    } else {
+      // No cache — start from the first contest, single request
+      setCurrentContest(start);
+    }
   }, []);
 
   const handlePrevContest = useCallback(() => {
@@ -141,7 +168,6 @@ function HomeContent() {
     setSelectedLottery(value);
     setSearchingGame(null);
     setCurrentContest(null);
-    setCarouselIndex(0);
   }, []);
 
   const handleUpdateContest = useCallback(
@@ -150,14 +176,6 @@ function HomeContent() {
     },
     [updateGame]
   );
-
-  const handleCarouselPrev = useCallback(() => {
-    setCarouselIndex((prev) => Math.max(0, prev - 1));
-  }, []);
-
-  const handleCarouselNext = useCallback(() => {
-    setCarouselIndex((prev) => Math.min(games.length - 1, prev + 1));
-  }, [games.length]);
 
   const canGoPrev =
     searchingGame &&
@@ -173,70 +191,28 @@ function HomeContent() {
     resultError instanceof NotFoundError ||
     (resultError && resultError.message?.includes("não foi apurado"));
 
-  // Collect all match results for stats
+  // Collect all match results for stats (populated as user navigates)
   const [allMatchResults, setAllMatchResults] = useState<MatchResult[]>([]);
 
-  const handleSearchAllContests = useCallback(
-    async (game: Game) => {
-      const gameConfig = getLotteryConfig(game.tipo_jogo);
-      if (!gameConfig) return;
-
-      setSearchingGame(game);
-      setCurrentContest(game.concurso_inicio);
-
-      const end = game.concurso_fim || game.concurso_inicio;
-      const results: MatchResult[] = [];
-
-      toast.info(
-        `Buscando resultados dos concursos ${game.concurso_inicio} a ${end}...`
+  // Accumulate match results as the user navigates through contests
+  useMemo(() => {
+    if (!searchingGame || !resultData) return;
+    const match = crossCheckNumbers(searchingGame, resultData);
+    setAllMatchResults((prev) => {
+      // Don't add duplicates
+      if (prev.some((m) => m.result.numero === match.result.numero)) return prev;
+      // Insert in ascending order
+      const next = [...prev, match].sort(
+        (a, b) => a.result.numero - b.result.numero
       );
-
-      for (let i = game.concurso_inicio; i <= end; i++) {
-        try {
-          const res = await fetch(
-            `/api/lottery/${game.tipo_jogo}/${i}`
-          );
-          if (res.ok) {
-            const data: LotteryResult = await res.json();
-            const match = crossCheckNumbers(game, data);
-            results.push(match);
-          }
-        } catch {
-          // skip failed contests
-        }
-      }
-
-      setAllMatchResults(results);
-      if (results.length > 0) {
-        const wins = results.filter((r) => r.isWinner);
-        const totalPrize = wins.reduce(
-          (s, r) => s + (r.prizeInfo?.valorPremio || 0),
-          0
-        );
-        if (wins.length > 0) {
-          toast.success(
-            `Você foi premiado em ${wins.length} concurso${
-              wins.length > 1 ? "s" : ""
-            }! Total: ${formatCurrency(totalPrize)}`
-          );
-        } else {
-          toast.info(
-            `Nenhum prêmio nos ${results.length} concurso${
-              results.length > 1 ? "s" : ""
-            } analisados.`
-          );
-        }
-      }
-    },
-    []
-  );
+      return next;
+    });
+  }, [searchingGame, resultData]);
 
   return (
     <div className="flex flex-col flex-1 min-h-screen bg-background">
       {/* Header */}
-      <header
-        className="sticky top-0 z-40 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60"
-      >
+      <header className="sticky top-0 z-40 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
         <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <div
@@ -255,42 +231,6 @@ function HomeContent() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              className="cursor-pointer relative"
-              disabled={isPushLoading || permission === "unsupported"}
-              onClick={() => {
-                if (isSubscribed) {
-                  unsubscribe();
-                } else {
-                  subscribe([selectedLottery]);
-                }
-              }}
-              title={
-                permission === "unsupported"
-                  ? "Notificações não suportadas neste navegador"
-                  : isSubscribed
-                  ? "Desativar notificações"
-                  : "Ativar notificações de resultados"
-              }
-            >
-              {isPushLoading ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : isSubscribed ? (
-                <BellRing className="h-4 w-4" style={{ color: config.color }} />
-              ) : permission === "denied" ? (
-                <BellOff className="h-4 w-4 text-muted-foreground" />
-              ) : (
-                <Bell className="h-4 w-4 text-muted-foreground" />
-              )}
-              {isSubscribed && (
-                <span
-                  className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full"
-                  style={{ backgroundColor: config.color }}
-                />
-              )}
-            </Button>
             <Badge
               className="text-xs font-bold"
               style={{
@@ -327,106 +267,42 @@ function HomeContent() {
               isSubmitting={createGame.isPending}
             />
 
-            {/* Games List */}
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold flex items-center gap-1.5 text-muted-foreground">
-                  <ListChecks className="h-4 w-4" />
-                  Meus Jogos ({games.length})
-                </h3>
+            {/* Games Sections */}
+            {isLoading ? (
+              <div className="space-y-3">
+                <GameCardSkeleton />
+                <GameCardSkeleton />
+                <GameCardSkeleton />
               </div>
+            ) : (
+              <>
+                <GameSection
+                  title="Jogos Ativos"
+                  count={activeGames.length}
+                  games={activeGames}
+                  config={config}
+                  variant="active"
+                  onDelete={handleDeleteGame}
+                  onSearch={handleGameSearch}
+                  onUpdateContest={handleUpdateContest}
+                  isDeleting={deleteGame.isPending}
+                />
 
-              {isLoading ? (
-                <div className="flex items-center justify-center py-8">
-                  <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                </div>
-              ) : games.length === 0 ? (
-                <motion.div
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className="text-center py-8 text-muted-foreground text-sm"
-                >
-                  <Ticket className="h-10 w-10 mx-auto mb-2 opacity-30" />
-                  <p>Nenhum jogo cadastrado para {config.displayName}</p>
-                  <p className="text-xs mt-1">
-                    Cadastre seus números acima para começar
-                  </p>
-                </motion.div>
-              ) : (
-                <div className="relative">
-                  {/* Carousel arrows */}
-                  {games.length > 1 && (
-                    <div className="flex items-center justify-between mb-2">
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        onClick={handleCarouselPrev}
-                        disabled={carouselIndex === 0}
-                        className="cursor-pointer"
-                      >
-                        <ChevronLeft className="h-4 w-4" />
-                      </Button>
-                      <span className="text-xs text-muted-foreground tabular-nums">
-                        {carouselIndex + 1} / {games.length}
-                      </span>
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        onClick={handleCarouselNext}
-                        disabled={carouselIndex >= games.length - 1}
-                        className="cursor-pointer"
-                      >
-                        <ChevronRight className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  )}
-                  <div className="overflow-hidden" ref={carouselRef}>
-                    <AnimatePresence mode="wait" initial={false}>
-                      <motion.div
-                        key={carouselIndex}
-                        initial={{ opacity: 0, x: 50 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        exit={{ opacity: 0, x: -50 }}
-                        transition={{ duration: 0.2 }}
-                      >
-                        {games[carouselIndex] && (
-                          <GameCard
-                            game={games[carouselIndex]}
-                            config={config}
-                            onDelete={handleDeleteGame}
-                            onSearch={(g) => {
-                              if (
-                                g.concurso_fim &&
-                                g.concurso_fim > g.concurso_inicio
-                              ) {
-                                handleSearchAllContests(g);
-                              } else {
-                                handleSearchGame(g);
-                              }
-                            }}
-                            onUpdateContest={handleUpdateContest}
-                            isDeleting={deleteGame.isPending}
-                          />
-                        )}
-                      </motion.div>
-                    </AnimatePresence>
-                  </div>
-                  {/* Dots indicator */}
-                  {games.length > 1 && (
-                    <div className="flex justify-center gap-1.5 mt-2">
-                      {games.map((_, idx) => (
-                        <button
-                          key={idx}
-                          onClick={() => setCarouselIndex(idx)}
-                          className={`cursor-pointer w-2 h-2 rounded-full transition-all ${idx === carouselIndex ? "w-5" : "bg-muted-foreground/30"}`}
-                          style={idx === carouselIndex ? { backgroundColor: config.color } : undefined}
-                        />
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
+                {endedGames.length > 0 && (
+                  <GameSection
+                    title="Jogos Encerrados"
+                    count={endedGames.length}
+                    games={endedGames}
+                    config={config}
+                    variant="ended"
+                    onDelete={handleDeleteGame}
+                    onSearch={handleGameSearch}
+                    onUpdateContest={handleUpdateContest}
+                    isDeleting={deleteGame.isPending}
+                  />
+                )}
+              </>
+            )}
           </div>
 
           {/* Right Column: Results */}
@@ -451,20 +327,19 @@ function HomeContent() {
                     >
                       <ChevronLeft className="h-4 w-4" />
                     </Button>
-                    <div className="text-center">
-                      <p className="text-xs text-muted-foreground">
-                        Navegando concursos
-                      </p>
-                      <p className="text-sm font-bold tabular-nums">
-                        {currentContest}
-                        {searchingGame.concurso_fim && (
-                          <span className="text-muted-foreground font-normal">
-                            {" "}
-                            / {searchingGame.concurso_inicio} -{" "}
-                            {searchingGame.concurso_fim}
-                          </span>
-                        )}
-                      </p>
+                    <div className="text-center flex flex-col items-center gap-1">
+                      <ContestSearch
+                        currentContest={currentContest}
+                        minContest={searchingGame.concurso_inicio}
+                        maxContest={searchingGame.concurso_fim || searchingGame.concurso_inicio}
+                        onSearch={setCurrentContest}
+                        disabled={isLoadingResult}
+                      />
+                      {searchingGame.concurso_fim && (
+                        <span className="text-xs text-muted-foreground tabular-nums">
+                          {searchingGame.concurso_inicio} - {searchingGame.concurso_fim}
+                        </span>
+                      )}
                     </div>
                     <div className="flex items-center gap-1">
                       <Button
@@ -487,39 +362,51 @@ function HomeContent() {
                     </div>
                   </div>
 
-                  {/* Loading */}
-                  {isLoadingResult && (
-                    <div className="flex flex-col items-center justify-center py-12 space-y-3">
-                      <Loader2
-                        className="h-8 w-8 animate-spin"
-                        style={{ color: config.color }}
-                      />
-                      <p className="text-sm text-muted-foreground">
-                        Buscando resultado do concurso {currentContest}...
-                      </p>
-                    </div>
-                  )}
+                  {/* Result content with animation on contest change */}
+                  <AnimatePresence mode="wait">
+                    <motion.div
+                      key={currentContest}
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -10 }}
+                      transition={{ duration: 0.2 }}
+                    >
+                      {/* Loading */}
+                      {isLoadingResult && (
+                        <div className="flex flex-col items-center justify-center py-12 space-y-3">
+                          <Loader2
+                            className="h-8 w-8 animate-spin"
+                            style={{ color: config.color }}
+                          />
+                          <p className="text-sm text-muted-foreground">
+                            Buscando resultado do concurso {currentContest}...
+                          </p>
+                        </div>
+                      )}
 
-                  {/* Not Found */}
-                  {!isLoadingResult && (isNotFound || (resultError && !resultData)) && (
-                    <PendingResult
-                      contestNumber={currentContest}
-                      config={config}
-                      isError={!!resultError && !isNotFound}
-                      errorMessage={resultError?.message}
-                    />
-                  )}
+                      {/* Not Found / Error */}
+                      {!isLoadingResult && (isNotFound || (resultError && !resultData)) && (
+                        <PendingResult
+                          contestNumber={currentContest}
+                          config={config}
+                          isError={!!resultError && !isNotFound}
+                          errorMessage={resultError?.message}
+                          onRetry={() => refetchResult()}
+                        />
+                      )}
 
-                  {/* Result */}
-                  {!isLoadingResult && resultData && (
-                    <ResultCard
-                      result={resultData}
-                      config={config}
-                      matchResult={matchResult}
-                    />
-                  )}
+                      {/* Result */}
+                      {!isLoadingResult && resultData && (
+                        <ResultCard
+                          result={resultData}
+                          config={config}
+                          matchResult={matchResult}
+                        />
+                      )}
+                    </motion.div>
+                  </AnimatePresence>
 
-                  {/* Stats panel for range searches */}
+                  {/* Stats panel — shows as user accumulates results navigating */}
                   {allMatchResults.length > 1 && (
                     <>
                       <Separator />
@@ -569,13 +456,5 @@ function HomeContent() {
 }
 
 export default function Home() {
-  return (
-    <Suspense fallback={
-      <div className="flex items-center justify-center min-h-screen">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-      </div>
-    }>
-      <HomeContent />
-    </Suspense>
-  );
+  return <HomeContent />;
 }

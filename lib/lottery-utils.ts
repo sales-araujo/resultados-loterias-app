@@ -116,3 +116,14 @@ export function getMatchLabel(count: number): string {
   if (count === 1) return "1 acerto";
   return `${count} acertos`;
 }
+
+export function getLatestContestForGame(game: Game): number {
+  return game.concurso_fim ?? game.concurso_inicio;
+}
+
+export function classifyGame(
+  game: Game,
+  latestContest: number
+): "active" | "ended" {
+  return getLatestContestForGame(game) >= latestContest ? "active" : "ended";
+}
