@@ -6,7 +6,7 @@ import { GameCard } from "@/components/lottery/GameCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Game, LotteryConfig } from "@/lib/types";
-import { ListChecks, ChevronLeft, ChevronRight, Ticket } from "lucide-react";
+import { ChevronLeft, ChevronRight, Ticket } from "lucide-react";
 
 interface GameSectionProps {
   title: string;
@@ -61,26 +61,29 @@ export function GameSection({
   return (
     <div className="space-y-3">
       {/* Section Header */}
-      <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold flex items-center gap-1.5 text-muted-foreground">
-          <ListChecks className="h-4 w-4" />
+      <div className="flex items-center gap-2">
+        <div
+          className="w-1 h-5 rounded-full"
+          style={{ backgroundColor: variant === "active" ? config.color : "#9ca3af" }}
+        />
+        <h3 className="text-sm font-semibold text-foreground">
           {title}
-          <Badge
-            variant="secondary"
-            className="ml-1 text-xs tabular-nums"
-            style={
-              variant === "active"
-                ? {
-                    backgroundColor: `${config.color}20`,
-                    color: config.color,
-                    borderColor: `${config.color}40`,
-                  }
-                : undefined
-            }
-          >
-            {count}
-          </Badge>
         </h3>
+        <Badge
+          variant="secondary"
+          className="text-xs tabular-nums"
+          style={
+            variant === "active"
+              ? {
+                  backgroundColor: `${config.color}15`,
+                  color: config.color,
+                  borderColor: `${config.color}30`,
+                }
+              : undefined
+          }
+        >
+          {count}
+        </Badge>
       </div>
 
       {/* Empty state — active variant only */}
@@ -88,12 +91,12 @@ export function GameSection({
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          className="text-center py-8 text-muted-foreground text-sm"
+          className="text-center py-10 text-muted-foreground text-sm rounded-2xl border border-dashed border-border/60"
         >
-          <Ticket className="h-10 w-10 mx-auto mb-2 opacity-30" />
-          <p>Nenhum jogo ativo para {config.displayName}</p>
-          <p className="text-xs mt-1">
-            Cadastre seus números acima para começar
+          <Ticket className="h-10 w-10 mx-auto mb-3 opacity-30" />
+          <p className="font-medium">Nenhum jogo ativo</p>
+          <p className="text-xs mt-1 text-muted-foreground/70">
+            Clique em &quot;Novo Jogo&quot; para começar
           </p>
         </motion.div>
       )}
@@ -113,7 +116,7 @@ export function GameSection({
               >
                 <ChevronLeft className="h-4 w-4" />
               </Button>
-              <span className="text-xs text-muted-foreground tabular-nums">
+              <span className="text-xs text-muted-foreground tabular-nums font-medium">
                 {safeIndex + 1} / {games.length}
               </span>
               <Button
@@ -161,13 +164,13 @@ export function GameSection({
 
           {/* Dots indicator */}
           {games.length > 1 && (
-            <div className="flex justify-center gap-1.5 mt-2">
+            <div className="flex justify-center gap-1.5 mt-3">
               {games.map((_, idx) => (
                 <button
                   key={idx}
                   onClick={() => setCarouselIndex(idx)}
-                  className={`cursor-pointer w-2 h-2 rounded-full transition-all ${
-                    idx === safeIndex ? "w-5" : "bg-muted-foreground/30"
+                  className={`cursor-pointer w-2 h-2 rounded-full transition-all duration-200 ${
+                    idx === safeIndex ? "w-6" : "bg-muted-foreground/20"
                   }`}
                   style={
                     idx === safeIndex

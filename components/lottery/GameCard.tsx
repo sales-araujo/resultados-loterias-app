@@ -70,12 +70,13 @@ export function GameCard({
       layout
       className={`w-full min-w-0 shrink-0${ended ? " opacity-50 grayscale" : ""}`}
     >
-      <Card className="overflow-hidden">
+      <Card className="overflow-hidden rounded-2xl shadow-md hover:shadow-lg transition-shadow duration-200">
         <div
           className="h-1.5"
           style={{ backgroundColor: config.color }}
         />
-        <CardContent className="p-3 sm:p-4 space-y-3">
+        <CardContent className="p-4 space-y-3">
+          {/* Header: Contest info + delete */}
           <div className="flex items-center justify-between gap-2">
             {isEditing ? (
               <div className="flex items-center gap-1.5 flex-1 min-w-0">
@@ -120,9 +121,9 @@ export function GameCard({
                 <Badge
                   className="text-xs font-bold cursor-pointer"
                   style={{
-                    backgroundColor: `${config.color}20`,
+                    backgroundColor: `${config.color}15`,
                     color: config.color,
-                    borderColor: `${config.color}40`,
+                    borderColor: `${config.color}30`,
                   }}
                   onClick={() => setIsEditing(true)}
                   title="Clique para editar concurso"
@@ -140,22 +141,13 @@ export function GameCard({
                 </Button>
               </div>
             )}
-            <div className="flex gap-1 shrink-0">
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                onClick={() => onSearch(game)}
-                className="cursor-pointer"
-                title="Pesquisar resultados"
-              >
-                <Search className="h-4 w-4" />
-              </Button>
+            <div className="shrink-0">
               <AlertDialog>
                 <AlertDialogTrigger asChild>
                   <Button
                     variant="ghost"
                     size="icon-sm"
-                    className="cursor-pointer text-destructive hover:text-destructive"
+                    className="cursor-pointer text-destructive/60 hover:text-destructive"
                     title="Excluir jogo"
                   >
                     <Trash2 className="h-4 w-4" />
@@ -184,11 +176,12 @@ export function GameCard({
             </div>
           </div>
 
+          {/* Numbers grid */}
           <div className="flex flex-wrap gap-1.5">
             {game.numeros.map((num) => (
               <span
                 key={num}
-                className="inline-flex items-center justify-center w-8 h-8 rounded-md text-xs font-bold text-white"
+                className="inline-flex items-center justify-center w-8 h-8 rounded-lg text-xs font-bold text-white shadow-sm"
                 style={{ backgroundColor: config.color }}
               >
                 {num.toString().padStart(2, "0")}
@@ -196,6 +189,7 @@ export function GameCard({
             ))}
           </div>
 
+          {/* Trevos */}
           {game.trevos && game.trevos.length > 0 && (
             <div className="flex items-center gap-1.5">
               <Clover className="h-3.5 w-3.5 text-emerald-600" />
@@ -205,13 +199,27 @@ export function GameCard({
               {game.trevos.map((trevo) => (
                 <span
                   key={trevo}
-                  className="inline-flex items-center justify-center w-7 h-7 rounded-md text-xs font-bold text-white bg-emerald-600"
+                  className="inline-flex items-center justify-center w-7 h-7 rounded-lg text-xs font-bold text-white bg-emerald-600 shadow-sm"
                 >
                   {trevo}
                 </span>
               ))}
             </div>
           )}
+
+          {/* Search Button */}
+          <Button
+            onClick={() => onSearch(game)}
+            variant="outline"
+            className="w-full h-10 font-semibold text-sm rounded-xl cursor-pointer transition-all duration-200 hover:scale-[1.01] active:scale-[0.99]"
+            style={{
+              borderColor: `${config.color}40`,
+              color: config.color,
+            }}
+          >
+            <Search className="h-4 w-4 mr-2" />
+            Buscar Resultado
+          </Button>
         </CardContent>
       </Card>
     </motion.div>

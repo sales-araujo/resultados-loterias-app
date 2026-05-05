@@ -422,23 +422,26 @@ function HomeContent() {
                   key="empty-results"
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
-                  className="flex flex-col items-center justify-center py-16 text-center"
+                  className="flex flex-col items-center justify-center py-16 text-center rounded-2xl border border-dashed border-border/50"
                 >
                   <div
-                    className="p-4 rounded-2xl mb-4"
-                    style={{ backgroundColor: `${config.color}10` }}
+                    className="p-5 rounded-2xl mb-4"
+                    style={{ backgroundColor: `${config.color}08` }}
                   >
                     <Ticket
-                      className="h-12 w-12"
-                      style={{ color: `${config.color}40` }}
+                      className="h-14 w-14"
+                      style={{ color: `${config.color}30` }}
                     />
                   </div>
-                  <h3 className="text-lg font-semibold text-muted-foreground mb-1">
+                  <h3 className="text-lg font-semibold text-foreground/70 mb-1">
                     Resultados
                   </h3>
-                  <p className="text-sm text-muted-foreground max-w-xs">
-                    Cadastre um jogo e clique no botão de pesquisa para
-                    verificar os resultados e conferir seus acertos.
+                  <p className="text-sm text-muted-foreground max-w-xs leading-relaxed">
+                    Cadastre um jogo e clique em{" "}
+                    <span className="font-semibold" style={{ color: config.color }}>
+                      &quot;Buscar Resultado&quot;
+                    </span>{" "}
+                    para conferir seus acertos.
                   </p>
                 </motion.div>
               )}

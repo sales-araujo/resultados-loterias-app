@@ -15,9 +15,16 @@ interface LotterySelectorProps {
 }
 
 export function LotterySelector({ value, onValueChange }: LotterySelectorProps) {
+  const selectedConfig = LOTTERY_LIST.find((l) => l.id === value);
+
   return (
     <Select value={value} onValueChange={onValueChange}>
-      <SelectTrigger className="w-full h-12 text-base">
+      <SelectTrigger
+        className="w-full h-12 text-base rounded-xl border-2 transition-colors duration-200"
+        style={{
+          borderColor: selectedConfig ? `${selectedConfig.color}40` : undefined,
+        }}
+      >
         <SelectValue placeholder="Selecione o jogo" />
       </SelectTrigger>
       <SelectContent>

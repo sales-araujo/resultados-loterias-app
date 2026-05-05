@@ -88,7 +88,7 @@ export function ContestSearch({
   );
 
   return (
-    <div className="flex items-center gap-1">
+    <div className="flex items-center gap-1.5">
       <Input
         type="text"
         inputMode="numeric"
@@ -97,18 +97,19 @@ export function ContestSearch({
         onKeyDown={handleKeyDown}
         disabled={disabled}
         placeholder={String(currentContest)}
-        className="h-7 w-20 text-center text-xs tabular-nums px-1.5"
+        className="h-8 w-20 text-center text-xs tabular-nums px-1.5 rounded-lg"
         aria-label="Buscar concurso"
       />
       <Button
-        variant="ghost"
-        size="icon-sm"
+        variant="outline"
+        size="sm"
         onClick={handleSubmit}
         disabled={disabled}
-        className="h-7 w-7 cursor-pointer"
+        className="h-8 px-3 text-xs font-semibold cursor-pointer rounded-lg"
         aria-label="Pesquisar concurso"
       >
-        <Search className="h-3.5 w-3.5" />
+        <Search className="h-3.5 w-3.5 mr-1.5" />
+        Buscar
       </Button>
     </div>
   );
